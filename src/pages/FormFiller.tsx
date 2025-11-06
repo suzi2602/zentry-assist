@@ -82,37 +82,70 @@ const FormFiller = () => {
   };
 
   const detectFormFields = (text: string): FormField[] => {
-    const commonLabels = [
-      "name", "full name", "first name", "last name",
-      "email", "phone", "mobile", "address",
-      "city", "state", "zip", "postal code",
-      "date of birth", "dob", "age",
-      "occupation", "income", "salary",
-      "id number", "pan", "aadhar", "passport"
-    ];
-
     const lines = text.split("\n").filter(line => line.trim());
     const fields: FormField[] = [];
+    const seenLabels = new Set<string>();
 
-    commonLabels.forEach(label => {
-      const regex = new RegExp(label, "i");
-      const matchedLine = lines.find(line => regex.test(line));
-      
-      if (matchedLine) {
-        const parts = matchedLine.split(/[:_\-]/);
-        const value = parts.length > 1 ? parts[1].trim() : "";
-        
-        fields.push({
-          label: label.charAt(0).toUpperCase() + label.slice(1),
-          value: value || "",
-          required: true,
-        });
+    // Pattern 1: "Label: ____" or "Label: _____" or "Label: [ ]"
+    // Pattern 2: "Label |______|" or "Label [______]"
+    // Pattern 3: "Label:" followed by empty line or underscores
+    const fieldPatterns = [
+      /^([^:]+?)[:]\s*[_\s\[\]]*$/i,  // Label: _____ or Label: [ ]
+      /^([^:]+?)\s*[\|\[][\s_]+[\]\|]/i,  // Label |___| or Label [___]
+      /^([^:]+?)[:]\s*$/i,  // Label: (with empty value)
+    ];
+
+    lines.forEach((line, index) => {
+      for (const pattern of fieldPatterns) {
+        const match = line.match(pattern);
+        if (match) {
+          let label = match[1].trim();
+          
+          // Clean up label (remove special chars at the end)
+          label = label.replace(/[:\|\[\]]+$/, '').trim();
+          
+          // Skip if too short, too long, or already seen
+          if (label.length < 2 || label.length > 50 || seenLabels.has(label.toLowerCase())) {
+            continue;
+          }
+
+          // Check if there's a value after the colon/separator
+          const colonIndex = line.indexOf(':');
+          let extractedValue = '';
+          
+          if (colonIndex !== -1) {
+            const afterColon = line.substring(colonIndex + 1).trim();
+            // If there's actual text (not just underscores/spaces), extract it
+            if (afterColon && !/^[_\s\[\]]+$/.test(afterColon)) {
+              extractedValue = afterColon.replace(/[_\[\]]+$/, '').trim();
+            }
+          }
+
+          seenLabels.add(label.toLowerCase());
+          fields.push({
+            label: label.charAt(0).toUpperCase() + label.slice(1),
+            value: extractedValue,
+            required: extractedValue === '', // Only required if no value found
+          });
+        }
       }
     });
 
+    // If no fields detected with patterns, try to find lines with colons
     if (fields.length === 0) {
-      ["Name", "Email", "Phone", "Address"].forEach(label => {
-        fields.push({ label, value: "", required: true });
+      lines.forEach(line => {
+        if (line.includes(':')) {
+          const [label, ...valueParts] = line.split(':');
+          const value = valueParts.join(':').trim();
+          
+          if (label.trim().length > 2 && label.trim().length < 50) {
+            fields.push({
+              label: label.trim().charAt(0).toUpperCase() + label.trim().slice(1),
+              value: value.replace(/^[_\s]+$/, ''),
+              required: !value || /^[_\s]+$/.test(value),
+            });
+          }
+        }
       });
     }
 
