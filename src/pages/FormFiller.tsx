@@ -14,6 +14,8 @@ interface FormField {
   label: string;
   value: string;
   required: boolean;
+  x?: number;
+  y?: number;
 }
 
 const FormFiller = () => {
@@ -24,6 +26,8 @@ const FormFiller = () => {
   const [extractedText, setExtractedText] = useState("");
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [currentStep, setCurrentStep] = useState<"upload" | "review" | "fill" | "complete">("upload");
+  const [imageUrl, setImageUrl] = useState<string>("");
+  const [ocrData, setOcrData] = useState<any>(null);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFile = e.target.files?.[0];
@@ -54,14 +58,19 @@ const FormFiller = () => {
         description: "Extracting text from your form...",
       });
 
+      // Create image URL for canvas rendering later
+      const url = URL.createObjectURL(uploadedFile);
+      setImageUrl(url);
+
       const result = await Tesseract.recognize(uploadedFile, "eng", {
         logger: (m) => console.log(m),
       });
 
       const text = result.data.text;
       setExtractedText(text);
+      setOcrData(result.data);
 
-      const detectedFields = detectFormFields(text);
+      const detectedFields = detectFormFields(text, result.data);
       setFormFields(detectedFields);
       setCurrentStep("review");
 
@@ -81,43 +90,72 @@ const FormFiller = () => {
     }
   };
 
-  const detectFormFields = (text: string): FormField[] => {
+  const detectFormFields = (text: string, ocrData?: any): FormField[] => {
     const lines = text.split("\n").filter(line => line.trim());
     const fields: FormField[] = [];
     const seenLabels = new Set<string>();
 
-    // Pattern 1: "Label: ____" or "Label: _____" or "Label: [ ]"
-    // Pattern 2: "Label |______|" or "Label [______]"
-    // Pattern 3: "Label:" followed by empty line or underscores
+    // Get word-level position data if available
+    const words = ocrData?.words || [];
+
+    // Enhanced patterns to catch more field types
     const fieldPatterns = [
-      /^([^:]+?)[:]\s*[_\s\[\]]*$/i,  // Label: _____ or Label: [ ]
-      /^([^:]+?)\s*[\|\[][\s_]+[\]\|]/i,  // Label |___| or Label [___]
+      /^([^:]+?)[:]\s*[_\s\[\]\(\)\.]*$/i,  // Label: _____ or Label: [ ]
+      /^([^:]+?)\s*[\|\[\(][\s_\.]+[\]\|\)]/i,  // Label |___| or Label [___] or Label (...)
       /^([^:]+?)[:]\s*$/i,  // Label: (with empty value)
+      /^([^:]+?)\s+[_\.]{3,}/i,  // Label _____ (spaces then underscores)
+      /^([^:]+?)\s*\([^\)]*\)\s*$/i,  // Label (    )
+      /^([^:]+?)\s*\[[^\]]*\]\s*$/i,  // Label [    ]
     ];
 
-    lines.forEach((line, index) => {
+    // Process each line
+    lines.forEach((line, lineIndex) => {
       for (const pattern of fieldPatterns) {
         const match = line.match(pattern);
         if (match) {
           let label = match[1].trim();
           
-          // Clean up label (remove special chars at the end)
-          label = label.replace(/[:\|\[\]]+$/, '').trim();
+          // Clean up label
+          label = label.replace(/[:\|\[\]\(\)\.]+$/, '').trim();
+          label = label.replace(/^[_\-\*]+/, '').trim();
           
-          // Skip if too short, too long, or already seen
-          if (label.length < 2 || label.length > 50 || seenLabels.has(label.toLowerCase())) {
+          // Skip invalid labels
+          if (label.length < 2 || label.length > 60 || seenLabels.has(label.toLowerCase())) {
             continue;
           }
 
-          // Check if there's a value after the colon/separator
+          // Filter out non-field text (headings, instructions, etc)
+          const invalidPatterns = [
+            /^(page|section|form|application|document|title|heading)/i,
+            /^(instructions?|note|please|important|attention)/i,
+            /^\d+\.?\s/,  // numbered items
+          ];
+          
+          if (invalidPatterns.some(p => p.test(label))) {
+            continue;
+          }
+
+          // Extract value if present
           const colonIndex = line.indexOf(':');
           let extractedValue = '';
+          let fieldX, fieldY;
           
           if (colonIndex !== -1) {
             const afterColon = line.substring(colonIndex + 1).trim();
-            // If there's actual text (not just underscores/spaces), extract it
-            if (afterColon && !/^[_\s\[\]]+$/.test(afterColon)) {
-              extractedValue = afterColon.replace(/[_\[\]]+$/, '').trim();
+            if (afterColon && !/^[_\s\[\]\(\)\.]+$/.test(afterColon)) {
+              extractedValue = afterColon.replace(/[_\[\]\(\)\.]+$/, '').trim();
+            }
+          }
+
+          // Try to find position from OCR word data
+          if (words.length > 0) {
+            const labelWords = label.toLowerCase().split(' ');
+            const matchingWord = words.find((w: any) => 
+              labelWords.some((lw: string) => w.text.toLowerCase().includes(lw))
+            );
+            if (matchingWord) {
+              fieldX = matchingWord.bbox.x1;
+              fieldY = matchingWord.bbox.y1 + 20; // Position below the label
             }
           }
 
@@ -125,29 +163,30 @@ const FormFiller = () => {
           fields.push({
             label: label.charAt(0).toUpperCase() + label.slice(1),
             value: extractedValue,
-            required: extractedValue === '', // Only required if no value found
+            required: extractedValue === '',
+            x: fieldX,
+            y: fieldY,
           });
         }
       }
     });
 
-    // If no fields detected with patterns, try to find lines with colons
-    if (fields.length === 0) {
-      lines.forEach(line => {
-        if (line.includes(':')) {
-          const [label, ...valueParts] = line.split(':');
-          const value = valueParts.join(':').trim();
-          
-          if (label.trim().length > 2 && label.trim().length < 50) {
-            fields.push({
-              label: label.trim().charAt(0).toUpperCase() + label.trim().slice(1),
-              value: value.replace(/^[_\s]+$/, ''),
-              required: !value || /^[_\s]+$/.test(value),
-            });
-          }
-        }
-      });
-    }
+    // Additional pass: find standalone words that look like labels
+    const standalonePatterns = [
+      /^(name|address|city|state|country|zip|postal|phone|mobile|email|date|age|gender|occupation|income|signature)$/i,
+    ];
+
+    lines.forEach((line) => {
+      const trimmed = line.trim();
+      if (standalonePatterns.some(p => p.test(trimmed)) && !seenLabels.has(trimmed.toLowerCase())) {
+        seenLabels.add(trimmed.toLowerCase());
+        fields.push({
+          label: trimmed.charAt(0).toUpperCase() + trimmed.slice(1),
+          value: '',
+          required: true,
+        });
+      }
+    });
 
     return fields;
   };
@@ -205,20 +244,72 @@ const FormFiller = () => {
     }
   };
 
-  const handleDownload = () => {
-    const formData = formFields.map(f => `${f.label}: ${f.value}`).join("\n");
-    const blob = new Blob([formData], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "filled-form.txt";
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleDownload = async () => {
+    try {
+      // Create canvas to draw the filled form
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas not supported');
 
-    toast({
-      title: "Downloaded",
-      description: "Form downloaded successfully",
-    });
+      // Load the original image
+      const img = new Image();
+      img.src = imageUrl;
+
+      await new Promise((resolve) => {
+        img.onload = resolve;
+      });
+
+      canvas.width = img.width;
+      canvas.height = img.height;
+
+      // Draw original form
+      ctx.drawImage(img, 0, 0);
+
+      // Set text styling
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#000000';
+      ctx.textBaseline = 'top';
+
+      // Draw filled values onto the form
+      formFields.forEach((field, index) => {
+        if (field.value) {
+          const x = field.x || 200; // Default position if OCR position not available
+          const y = field.y || 100 + (index * 40);
+          
+          // Add white background for better readability
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(x - 2, y - 2, 300, 22);
+          
+          // Draw text
+          ctx.fillStyle = '#000000';
+          ctx.fillText(field.value, x, y);
+        }
+      });
+
+      // Convert to blob and download
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'filled-form.png';
+          a.click();
+          URL.revokeObjectURL(url);
+
+          toast({
+            title: "Downloaded",
+            description: "Filled form downloaded successfully",
+          });
+        }
+      }, 'image/png');
+    } catch (error) {
+      console.error('Download error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to generate filled form",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleReset = () => {
@@ -226,6 +317,11 @@ const FormFiller = () => {
     setExtractedText("");
     setFormFields([]);
     setCurrentStep("upload");
+    if (imageUrl) {
+      URL.revokeObjectURL(imageUrl);
+      setImageUrl("");
+    }
+    setOcrData(null);
   };
 
   return (
