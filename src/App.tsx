@@ -12,6 +12,7 @@ import Loan from "./pages/Loan";
 import Credit from "./pages/Credit";
 import Insurance from "./pages/Insurance";
 import Schemes from "./pages/Schemes";
+import FormFiller from "./pages/FormFiller";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,6 +33,7 @@ const App = () => (
           <Route path="/credit" element={<Credit />} />
           <Route path="/insurance" element={<Insurance />} />
           <Route path="/schemes" element={<Schemes />} />
+          <Route path="/form-filler" element={<FormFiller />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

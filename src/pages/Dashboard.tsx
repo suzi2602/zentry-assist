@@ -7,11 +7,18 @@ import { CreditCard, Shield, Briefcase, FileText, Landmark } from "lucide-react"
 
 const services = [
   {
+    title: "Auto Form Filler",
+    description: "Scan forms and auto-fill with OCR technology",
+    icon: FileText,
+    path: "/form-filler",
+    color: "bg-blue-500",
+  },
+  {
     title: "Visa Eligibility",
     description: "Check your visa eligibility for different countries",
     icon: FileText,
     path: "/visa",
-    color: "bg-blue-500",
+    color: "bg-cyan-500",
   },
   {
     title: "Bank Loan Advisor",
